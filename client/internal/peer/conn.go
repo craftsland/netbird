@@ -959,19 +959,11 @@ func (conn *Conn) recordConnectionMetrics() {
 	priority := conn.currentConnPriority
 	conn.mu.Unlock()
 
-	var connType metrics.ConnectionType
-	switch priority {
-	case conntype.Relay:
-		connType = metrics.ConnectionTypeRelay
-	default:
-		connType = metrics.ConnectionTypeICE
-	}
-
 	// Record metrics with timestamps - duration calculation happens in metrics package
 	conn.metricsRecorder.RecordConnectionStages(
 		context.Background(),
 		conn.config.Key,
-		connType,
+		metricsConnType(priority),
 		conn.metricsStages.IsReconnection(),
 		conn.metricsStages.GetTimestamps(),
 	)
@@ -1064,4 +1056,26 @@ func boolToConnStatus(connected bool) guard.ConnStatus {
 		return guard.ConnStatusConnected
 	}
 	return guard.ConnStatusDisconnected
+}
+
+// metricsConnType maps a connection priority to the metric tag value.
+//
+// Every priority is listed explicitly: an unset priority (conntype.None) and any priority
+// added later must be reported as unknown rather than counted as peer-to-peer. The previous
+// implementation used a default branch for everything but conntype.Relay, which recorded
+// ICE-over-TURN and not-yet-established connections as direct P2P and overstated the
+// direct-connection share.
+func metricsConnType(priority conntype.ConnPriority) metrics.ConnectionType {
+	switch priority {
+	case conntype.Relay:
+		return metrics.ConnectionTypeRelay
+	case conntype.ICETurn:
+		return metrics.ConnectionTypeICETurn
+	case conntype.ICEP2P:
+		return metrics.ConnectionTypeICEP2P
+	default:
+		// conntype.None (not established yet, or reset after a relay drop or a peer-state
+		// reset) and any priority added later.
+		return metrics.ConnectionTypeUnknown
+	}
 }

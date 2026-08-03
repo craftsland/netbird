@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/netbirdio/netbird/client/iface"
+	"github.com/netbirdio/netbird/client/internal/metrics"
+	"github.com/netbirdio/netbird/client/internal/peer/conntype"
 	"github.com/netbirdio/netbird/client/internal/peer/dispatcher"
 	"github.com/netbirdio/netbird/client/internal/peer/guard"
 	"github.com/netbirdio/netbird/client/internal/peer/ice"
@@ -385,4 +387,40 @@ func TestConn_onWGDisconnected_NoEscalationWithoutRosenpass(t *testing.T) {
 		conn.onWGDisconnected(conn.ctx)
 	}
 	assert.Empty(t, disconnected, "escalation must be limited to rosenpass connections")
+}
+
+// TestMetricsConnType guards the mapping that decides whether a sample counts as direct
+// peer-to-peer. ICETurn is relayed traffic and None means "not established yet"; neither may
+// be reported as P2P, which is what the previous default branch did.
+func TestMetricsConnType(t *testing.T) {
+	tests := []struct {
+		name     string
+		priority conntype.ConnPriority
+		expected metrics.ConnectionType
+	}{
+		{"relay", conntype.Relay, metrics.ConnectionTypeRelay},
+		{"ice over turn is relayed, not p2p", conntype.ICETurn, metrics.ConnectionTypeICETurn},
+		{"direct p2p", conntype.ICEP2P, metrics.ConnectionTypeICEP2P},
+		{"unset priority is unknown, not p2p", conntype.None, metrics.ConnectionTypeUnknown},
+		{"unrecognised priority is unknown", conntype.ConnPriority(99), metrics.ConnectionTypeUnknown},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, metricsConnType(tc.priority))
+		})
+	}
+}
+
+// TestMetricsConnType_RelayedMatchesIsRelayed pins the metric tags to Conn.isRelayed, the
+// other place in this package that decides what counts as relayed. The two used to disagree
+// about ICETurn.
+func TestMetricsConnType_RelayedMatchesIsRelayed(t *testing.T) {
+	for _, priority := range []conntype.ConnPriority{conntype.None, conntype.Relay, conntype.ICETurn, conntype.ICEP2P} {
+		conn := &Conn{currentConnPriority: priority}
+		tag := metricsConnType(priority)
+		relayedTag := tag == metrics.ConnectionTypeRelay || tag == metrics.ConnectionTypeICETurn
+		assert.Equal(t, conn.isRelayed(), relayedTag,
+			"priority %s: isRelayed and the %q metric tag must agree", priority, tag)
+	}
 }
